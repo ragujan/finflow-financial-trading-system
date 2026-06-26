@@ -1094,9 +1094,9 @@ Follow this sequence. Each phase builds on the previous one.
 
 ### Phase 2 — Event Foundation
 
-- [ ] PostgreSQL databases created (`finflow_orders`, `finflow_payments`, `finflow_risk`)
-- [ ] Flyway migrations for `domain_events` table in each DB
-- [ ] Flyway migrations for read model tables (`orders_view`, `positions_view`)
+- [x] PostgreSQL databases created (`finflow_orders`, `finflow_payments`, `finflow_risk`)
+- [x] Flyway migrations for `domain_events` table in each DB
+- [x] Flyway migrations for read model tables (`orders_view`, `positions_view`)
 - [ ] Redpanda running locally, topics created
 - [ ] Verify producer/consumer works end-to-end with a test event
 
