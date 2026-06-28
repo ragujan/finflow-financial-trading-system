@@ -2,7 +2,7 @@
 
 Trading and payment processing platform (Quarkus microservices).
 
-**Getting started:** see [PROJECT_SETUP.md](PROJECT_SETUP.md) for build, run, and current project status.
+**Getting started:** see [PROJECT_SETUP.md](PROJECT_SETUP.md) for build, run, and current project status (Phase 2 complete).
 
 Architecture: [SystemArch.md](SystemArch.md).
 

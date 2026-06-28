@@ -639,7 +639,7 @@ mp.jwt.verify.issuer=https://finflow.dev
 # Redis
 %dev.quarkus.redis.hosts=redis://localhost:6379
 
-# Kafka (Redpanda)
+# Kafka (Azure Event Hubs — see order-service application.properties.sample for SASL config)
 %dev.kafka.bootstrap.servers=localhost:9092
 
 # Logging
@@ -746,7 +746,7 @@ Running Docker on 16 GB RAM with Kafka + Zookeeper + Schema Registry + Redis + P
 | Quarkus services × 5 (dev mode) | ~2.0 GB     |
 | PostgreSQL 16 native            | ~1.2 GB     |
 | Redis 7 native                  | ~0.8 GB     |
-| Redpanda (Kafka replacement)    | ~1.5 GB     |
+| Redpanda (Kafka replacement)    | ~0 GB (Azure Event Hubs used instead) |
 | React dev server (Vite)         | ~0.7 GB     |
 | OS + IDE (VS Code / Cursor)     | ~1.5 GB     |
 | **Total**                       | **~7.7 GB** |
@@ -755,51 +755,60 @@ Running Docker on 16 GB RAM with Kafka + Zookeeper + Schema Registry + Redis + P
 ### Install Prerequisites (Windows)
 
 ```powershell
-# 1. Java 21 — already done (confirmed working)
+# 1. Java 21
 
-# 2. Redpanda (Kafka-compatible, single binary)
-# Download from: https://github.com/redpanda-data/redpanda/releases
-# Extract redpanda.exe to C:\redpanda\
-# Start: C:\redpanda\redpanda.exe start --overprovisioned
-
-# 3. PostgreSQL 16
+# 2. PostgreSQL 16+
 # Download installer from: https://www.postgresql.org/download/windows/
-# Install with default settings, remember the postgres password
+# Create databases: finflow_orders, finflow_payments, finflow_risk
 
-# 4. Redis for Windows
-# Download from: https://github.com/microsoftarchive/redis/releases
-# Or use Memurai (Redis-compatible for Windows): https://www.memurai.com/
+# 3. Azure Event Hubs (Kafka) — current dev messaging setup
+# Azure Portal: Event Hubs namespace (Standard tier), event hub named "orders"
+# Copy connection string; configure via env vars (see env.azure.example at repo root)
 
-# 5. Node 20+
-# Download from: https://nodejs.org/en/download/
+# 4. Redis for Windows (Phase 3+)
+# Or Azure Cache for Redis
+
+# 5. Node 20+ (Phase 5 frontend)
+```
+
+**Note:** Redpanda has no supported native Windows broker. For local-only Kafka without Azure, use WSL2, Docker, or Apache Kafka KRaft on Windows.
+
+### Kafka smoke test (Phase 2 — implemented)
+
+```powershell
+cd F:\finflow
+# Load .env.azure.local (see PROJECT_SETUP.md)
+
+.\mvnw.cmd quarkus:dev -pl matching-engine   # Terminal 1
+.\mvnw.cmd quarkus:dev -pl order-service     # Terminal 2
+Invoke-RestMethod -Method POST -Uri http://localhost:8081/internal/smoke/orders
 ```
 
 ### Start Everything
 
 ```powershell
-# Terminal 1 — Redpanda
-C:\redpanda\redpanda.exe start --overprovisioned
+# Load Azure Event Hubs env vars first (see env.azure.example)
 
-# Terminal 2 — Redis (or Memurai runs as Windows service automatically)
-redis-server
+# Terminal 1 — matching-engine (Kafka consumer)
+.\mvnw.cmd quarkus:dev -pl matching-engine
 
-# Terminal 3 — Gateway
+# Terminal 2 — order-service (Kafka producer + Postgres)
+.\mvnw.cmd quarkus:dev -pl order-service
+
+# Terminal 3 — Gateway (Phase 4+)
 cd F:\finflow
 .\mvnw.cmd quarkus:dev -pl gateway -Dquarkus.http.port=8080
 
-# Terminal 4 — Order Service
-.\mvnw.cmd quarkus:dev -pl order-service -Dquarkus.http.port=8081
-
-# Terminal 5 — Matching Engine
-.\mvnw.cmd quarkus:dev -pl matching-engine -Dquarkus.http.port=8082
-
-# Terminal 6 — Payment Service
+# Terminal 4 — Payment Service
 .\mvnw.cmd quarkus:dev -pl payment-service -Dquarkus.http.port=8083
 
-# Terminal 7 — Risk Engine
+# Terminal 5 — Risk Engine
 .\mvnw.cmd quarkus:dev -pl risk-engine -Dquarkus.http.port=8084
 
-# Terminal 8 — React Frontend
+# Terminal 6 — Redis (Phase 3+)
+# redis-server  OR  Azure Cache for Redis
+
+# Terminal 7 — React Frontend (Phase 5+)
 cd F:\finflow\finflow-ui
 npm run dev
 ```
@@ -808,7 +817,8 @@ npm run dev
 
 | Feature         | Local Dev           | Production (K8s)              |
 | --------------- | ------------------- | ----------------------------- |
-| Kafka broker    | Redpanda binary     | Redpanda or Confluent Cloud   |
+| Kafka broker    | Azure Event Hubs (Standard, Kafka endpoint) | Event Hubs, Redpanda, or Confluent Cloud |
+| Kafka secrets   | `EVENTHUBS_CONNECTION_STRING` env var       | Sealed Secrets / Key Vault               |
 | Schema Registry | Skip — use JSON     | Confluent Schema Registry     |
 | TimescaleDB     | Plain PG partition  | TimescaleDB extension         |
 | Redis           | Single node         | Redis cluster                 |
@@ -1092,13 +1102,14 @@ Follow this sequence. Each phase builds on the previous one.
 - [x] `common-lib` event records: `OrderPlaced`, `TradeExecuted`, `PaymentSettled`
 - [x] Verify `./mvnw clean install` passes for all modules
 
-### Phase 2 — Event Foundation
-
+### Phase 2 — Event Foundation (complete)
 - [x] PostgreSQL databases created (`finflow_orders`, `finflow_payments`, `finflow_risk`)
 - [x] Flyway migrations for `domain_events` table in each DB
 - [x] Flyway migrations for read model tables (`orders_view`, `positions_view`)
-- [ ] Redpanda running locally, topics created
-- [ ] Verify producer/consumer works end-to-end with a test event
+- [x] Azure Event Hubs namespace (Standard, Kafka enabled) + `orders` event hub
+- [x] Kafka producer in `order-service` (`OrderPlacedPublisher`, smoke REST endpoint)
+- [x] Kafka consumer in `matching-engine` (`OrderPlacedConsumer`)
+- [x] End-to-end smoke test: `POST /internal/smoke/orders` → Event Hub → consumer log
 
 ### Phase 3 — Core Services
 
@@ -1149,8 +1160,11 @@ Follow this sequence. Each phase builds on the previous one.
 
 ## Key Architectural Decisions
 
-**Why Redpanda over Kafka locally?**
-Kafka requires Kafka + Zookeeper + Schema Registry = 3 JVM processes, ~4 GB RAM. Redpanda is a single Rust binary, Kafka-API compatible, ~300 MB. Zero code changes needed.
+**Why Azure Event Hubs for dev (instead of local Redpanda)?**
+Redpanda has no native Windows broker; Docker/WSL add RAM and setup cost. Event Hubs exposes a Kafka-compatible endpoint — Quarkus clients work with SASL config only, zero local broker RAM.
+
+**Why Redpanda over Kafka locally (when on Linux)?**
+Kafka + Zookeeper + Schema Registry = 3 JVM processes, ~4 GB RAM. Redpanda is a single binary, Kafka-API compatible, ~300 MB. Not used in current Windows dev path.
 
 **Why event sourcing?**
 Financial systems are legally required to have an immutable audit trail. Event sourcing gives you this for free — every state change is an event. You can replay events to rebuild any read model, debug any historical state, and prove exactly what happened in any trade.

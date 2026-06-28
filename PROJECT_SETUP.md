@@ -1,6 +1,6 @@
 # FinFlow — Project Setup & Getting Started
 
-A practical guide to clone, build, and run FinFlow **as of Phase 1 (Scaffold complete)**.
+A practical guide to clone, build, and run FinFlow **as of Phase 2 (Event Foundation complete)**.
 
 For full system design, see [SystemArch.md](SystemArch.md).
 
@@ -13,9 +13,11 @@ FinFlow is a trading and payment processing platform built with:
 - **Java 21** + **Quarkus 3.9.5**
 - **Maven** multi-module layout
 - **Lombok** + **MapStruct** (all modules)
-- Planned: PostgreSQL, Redpanda (Kafka), Redis, React UI
+- **PostgreSQL** (local) — event store + read models (Flyway)
+- **Azure Event Hubs** (Kafka protocol) — messaging backbone for dev
+- Planned: Redis, full REST APIs, React UI
 
-**Current state:** Shared library and empty service shells compile and package. No REST APIs, databases, or messaging yet.
+**Current state:** Phase 2 complete. Postgres + Flyway run in order/payment/risk services. Kafka producer (`order-service`) and consumer (`matching-engine`) publish/consume `OrderPlaced` on Azure Event Hub `orders` via smoke test endpoint. Business REST APIs and matching logic are Phase 3.
 
 ---
 
@@ -27,7 +29,12 @@ FinFlow is a trading and payment processing platform built with:
 | Git | any | optional |
 | IDE | Cursor / IntelliJ | Enable annotation processing for Lombok + MapStruct |
 
-**Not required yet for Phase 1:** PostgreSQL, Redpanda, Redis, Node.js (needed in Phase 2+).
+| Tool | Phase | Notes |
+|------|-------|-------|
+| PostgreSQL | 2+ | Local install; databases `finflow_orders`, `finflow_payments`, `finflow_risk` |
+| Azure Event Hubs | 2+ | Standard tier namespace + `orders` event hub (see [env.azure.example](env.azure.example)) |
+| Redis | 3+ | Azure Cache for Redis or local Memurai |
+| Node.js | 5+ | React frontend |
 
 ### Local configuration (before first run)
 
@@ -43,6 +50,24 @@ Copy-Item risk-engine\src\main\resources\application.properties.sample risk-engi
 
 Edit each `application.properties` and set your PostgreSQL password (and JDBC URL if not using localhost).
 
+### Azure Event Hubs credentials (Phase 2+)
+
+Kafka clients authenticate via environment variables (never commit secrets):
+
+1. Copy [env.azure.example](env.azure.example) to `.env.azure.local` (gitignored)
+2. Paste your Event Hubs namespace connection string from Azure Portal
+3. Load into PowerShell **before** starting services that use Kafka:
+
+```powershell
+Get-Content .env.azure.local | ForEach-Object {
+  if ($_ -match '^\s*([^#][^=]+)=(.*)$') {
+    Set-Item -Path "Env:$($matches[1].Trim())" -Value $matches[2].Trim()
+  }
+}
+```
+
+Required variables: `EVENTHUBS_BOOTSTRAP`, `EVENTHUBS_CONNECTION_STRING`.
+
 ---
 
 ## Project structure
@@ -53,8 +78,8 @@ finflow/
 ├── mvnw / mvnw.cmd         # Maven wrapper (use this, not system Maven)
 ├── common-lib/             # Shared Java library (all real code lives here today)
 ├── gateway/                # Quarkus service — port 8080 (scaffold)
-├── order-service/          # Quarkus service — port 8081 (scaffold)
-├── matching-engine/        # Quarkus service — port 8082 (scaffold)
+├── order-service/          # Quarkus — port 8081 (Postgres, Kafka producer)
+├── matching-engine/        # Quarkus — port 8082 (Kafka consumer)
 ├── payment-service/        # Quarkus service — port 8083 (scaffold)
 ├── risk-engine/            # Quarkus service — port 8084 (scaffold)
 ├── SystemArch.md           # Architecture & build phases
@@ -71,7 +96,7 @@ finflow/
 | `com.finflow.common.mapper` | MapStruct mappers (event ↔ DTO), CDI-ready |
 | `com.finflow.common.exceptions` | `FinFlowException` |
 
-Service modules currently contain only `pom.xml` and `application.properties` (HTTP port).
+**Implemented today:** `order-service` (Flyway, `OrderPlacedPublisher`, smoke REST) and `matching-engine` (`OrderPlacedConsumer`). Other services are still scaffolds (health + Postgres migrations where applicable).
 
 ---
 
@@ -130,7 +155,20 @@ From the repo root:
 
 Quarkus Dev UI (dev mode only): http://localhost:8080/q/dev/ (when gateway is running).
 
-There are no custom REST endpoints yet — only Quarkus defaults and health.
+**Phase 2 smoke test** (requires Azure env vars loaded):
+
+```powershell
+# Terminal 1 — consumer
+.\mvnw.cmd quarkus:dev -pl matching-engine
+
+# Terminal 2 — producer
+.\mvnw.cmd quarkus:dev -pl order-service
+
+# Terminal 3 — publish test OrderPlaced
+Invoke-RestMethod -Method POST -Uri http://localhost:8081/internal/smoke/orders
+```
+
+Expect `published` in the HTTP response, `Published OrderPlaced` in order-service logs, and `OrderPlaced smoke received` in matching-engine logs.
 
 ---
 
@@ -169,18 +207,18 @@ OrderPlacedMapper orderPlacedMapper;
 | Phase | Status | What it adds |
 |-------|--------|----------------|
 | **1 — Scaffold** | Complete | Modules, `common-lib`, green `mvn install` |
-| **2 — Event Foundation** | Next | Postgres, Flyway, Redpanda, event smoke test |
-| **3 — Core Services** | Pending | REST, matching, payments, risk |
+| **2 — Event Foundation** | Complete | Postgres, Flyway, Azure Event Hubs, Kafka smoke test |
+| **3 — Core Services** | Next | REST, matching, payments, risk |
 | **4 — Gateway** | Pending | JWT, rate limits, WebSocket |
 | **5 — Frontend** | Pending | React UI |
 
 ---
 
-## Phase 2 preview (not implemented yet)
+## Phase 2 — Event Foundation (complete)
 
-When you start Phase 2, you will need:
+### PostgreSQL (local)
 
-### One PostgreSQL server, three databases
+One server, three databases:
 
 ```sql
 CREATE DATABASE finflow_orders;    -- order-service
@@ -188,14 +226,32 @@ CREATE DATABASE finflow_payments;  -- payment-service
 CREATE DATABASE finflow_risk;      -- risk-engine
 ```
 
-`gateway` and `matching-engine` do not use Postgres in this design (Redis/Kafka instead).
+Flyway migrations: `domain_events`, `orders_view`, `positions_view`.
 
-### Other infrastructure (later)
+### Messaging — Azure Event Hubs
 
-- **Redpanda** — Kafka-compatible broker (`orders`, `trades`, `payments` topics)
-- **Redis** — order book, rate limits, sessions (Phase 3+)
+Dev uses **Azure Event Hubs** (Kafka protocol), not a local broker — avoids Docker/WSL on Windows.
 
-See [SystemArch.md §11 — Local Development Setup](SystemArch.md) for native Windows install links.
+| Azure resource | Value (example) |
+|----------------|-------------------|
+| Namespace | `finflow-dev-eh` (Standard tier, Kafka enabled) |
+| Event hub | `orders` (12 partitions) |
+| Bootstrap | `finflow-dev-eh.servicebus.windows.net:9093` |
+
+Code paths:
+
+| Module | Class | Role |
+|--------|-------|------|
+| order-service | `OrderSmokeResource` | `POST /internal/smoke/orders` |
+| order-service | `OrderPlacedPublisher` | Publishes JSON to topic `orders` |
+| matching-engine | `OrderPlacedConsumer` | Consumes from topic `orders` |
+
+### Phase 3 infrastructure (next)
+
+- **Redis** — order book, idempotency, rate limits
+- Event hubs `trades`, `payments` (create in Azure when needed)
+
+See [SystemArch.md §11](SystemArch.md) for full local/cloud dev notes.
 
 ---
 
@@ -208,6 +264,9 @@ See [SystemArch.md §11 — Local Development Setup](SystemArch.md) for native W
 | `mvn clean` fails on `target/*.jar` | Stop `quarkus:dev`, delete `target/`, run `install` |
 | MapStruct mapper not found at runtime | Rebuild `common-lib`; ensure Jandex index in jar |
 | PowerShell `&&` not supported | Use `;` or separate commands |
+| Kafka JAAS / `Could not find KafkaClient` | Load `EVENTHUBS_CONNECTION_STRING` in the same terminal before `quarkus:dev` |
+| Quarkus tries Docker Kafka Dev Services | Harmless if Azure env is set; optional: `quarkus.kafka.devservices.enabled=false` |
+| `application.properties.sample` warning | Rebuild after pom excludes `*.sample` from classpath |
 
 ---
 
@@ -238,4 +297,4 @@ See [SystemArch.md §11 — Local Development Setup](SystemArch.md) for native W
 
 ## Next step
 
-Implement **Phase 2 — Event Foundation**: Flyway + Postgres in `order-service`, `payment-service`, and `risk-engine`, then Redpanda and a minimal producer/consumer test with `OrderPlaced`.
+**Phase 3 — Core Services:** implement `POST /orders` in order-service (event store + Kafka publish), then matching-engine order book + Redis, payment settlement, and risk pre-trade checks.
