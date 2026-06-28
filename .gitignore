@@ -38,6 +38,7 @@ nb-configuration.xml
 
 # Local environment
 .env
+.env.azure.local
 
 # Local Quarkus config (copy from application.properties.sample)
 **/src/main/resources/application.properties
